@@ -1,0 +1,7 @@
+{
+  "DefaultConnectionString": "",
+  "DefaultOutputPath": "./output",
+  "DefaultDbMasks": [
+    "dbname.*.*"
+  ]
+}
