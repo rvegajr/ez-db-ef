@@ -1,4 +1,5 @@
 ﻿
+
 using System.Data;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
@@ -18,8 +19,9 @@ public class SolutionGenerator
     private readonly string _assemblyPrefix;
     private readonly ILogger _logger;
     private readonly string _packageVersion;
-        private readonly string _serverName;
-    private readonly string _solutionName;
+    private readonly string _serverName;
+    private string _solutionPath;
+    private readonly string _dalPath;
 
     public SolutionGenerator(string connectionString, List<DatabaseMaskParser.DatabaseObject> databaseMasks, string outputPath, string assemblyPrefix, ILogger logger, string packageVersion)
     {
@@ -30,21 +32,29 @@ public class SolutionGenerator
         _logger = logger;
         _packageVersion = packageVersion;
         _serverName = ExtractServerName(connectionString);
-        _solutionName = $"{_serverName}Solution";
+        _solutionPath = Path.Combine(outputPath, "src", $"{_serverName}.sln");
+        _dalPath = Path.Combine(outputPath, "src", "DAL");
+        Log($"Output path: {_outputPath}");
+        Log($"Solution path: {_solutionPath}");
+        Log($"DAL path: {_dalPath}");
     }
 
-    
-    public async Task GenerateAsync()
+    public async Task<string> GenerateAsync()
     {
         Log($"Starting solution generation for server: {_serverName}");
 
-        var srcPath = Path.Combine(_outputPath, "src");
-        var solutionPath = Path.Combine(srcPath, $"{_solutionName}.sln");
-        var dalPath = Path.Combine(srcPath, "DAL");
-        Directory.CreateDirectory(dalPath);
+        var solutionFile = new FileInfo(_solutionPath);
+        solutionFile.Directory?.Create();
 
-        await CreateSolutionFileWithHeaderAsync(solutionPath);
-        Log($"Created solution file: {solutionPath}");
+        await CreateSolutionFileWithHeaderAsync(_solutionPath);
+        Log($"Created solution file: {_solutionPath}");
+
+        Directory.CreateDirectory(_dalPath);
+
+        foreach (var database in _databaseMasks.Select(m => m.Database).Distinct())
+        {
+            await GenerateDatabaseProjectAsync(database);
+        }
 
         var databases = await GetDatabasesAsync();
         Log($"Found {databases.Count} matching databases");
@@ -52,26 +62,15 @@ public class SolutionGenerator
         foreach (var database in databases)
         {
             Log($"Processing database: {database}");
-            var projectName = $"{_assemblyPrefix}.DAL.{database}";
-            var projectPath = Path.Combine(dalPath, database, $"{projectName}.csproj");
-
-            Directory.CreateDirectory(Path.GetDirectoryName(projectPath)!);
-            Log($"Created directory: {Path.GetDirectoryName(projectPath)}");
-
-            CreateProjectFile(projectPath, projectName, _packageVersion);
-            Log($"Created project file: {projectPath}");
-
-            await AddProjectToSolutionAsync(solutionPath, projectPath, projectName);
-            Log($"Added project to solution: {projectName}");
-
-            await GenerateEfCoreModelAsync(database, projectPath);
-            Log($"Generated EF Core model for database: {database}");
+            await GenerateDatabaseProjectAsync(database);
         }
 
         Log("Solution generation completed successfully");
 
-        await CompileSolutionAsync(solutionPath);
-        await GenerateNuGetPackagesAsync(solutionPath);
+        await CompileSolutionAsync(_solutionPath);
+        await GenerateNuGetPackagesAsync(_solutionPath);
+
+        return _solutionPath;
     }
 
     private async Task<List<string>> GetDatabasesAsync()
@@ -84,14 +83,12 @@ public class SolutionGenerator
         {
             using var connection = new SqlConnection(_connectionString);
 
-            // Test connection before opening
             await TestConnectionAsync(connection);
 
             Log("Opening connection to SQL Server");
             await connection.OpenAsync();
             Log($"Successfully connected to SQL Server. Connection State: {connection.State}");
 
-            // Verify connection state
             if (connection.State != ConnectionState.Open)
             {
                 throw new InvalidOperationException($"Expected connection to be open, but it is {connection.State}");
@@ -107,11 +104,10 @@ public class SolutionGenerator
             ORDER BY name";
 
             using var command = new SqlCommand(commandText, connection);
-            command.CommandTimeout = 30; // Set an appropriate timeout
+            command.CommandTimeout = 30;
 
             Log("Executing SQL command");
             using var reader = await command.ExecuteReaderAsync();
-
 
             Log("Processing query results");
             while (await reader.ReadAsync())
@@ -119,10 +115,10 @@ public class SolutionGenerator
                 var dbName = reader.GetString(0);
                 Log($"Processing database: {dbName}");
 
-                    if (!systemDatabases.Contains(dbName) &&
-                        (_databaseMasks.Count == 0 || _databaseMasks.Any(mask => mask.Regex.IsMatch(dbName))))
-                    {
-                        databases.Add(dbName);
+                if (!systemDatabases.Contains(dbName) &&
+                    (_databaseMasks.Count == 0 || _databaseMasks.Any(mask => mask.Regex.IsMatch(dbName))))
+                {
+                    databases.Add(dbName);
                     Log($"Found matching database: {dbName}");
                 }
                 else
@@ -189,37 +185,38 @@ public class SolutionGenerator
     private void CreateProjectFile(string projectPath, string projectName, string packageVersion)
     {
         Log($"Creating project file: {projectPath}");
-        var projectContent = new StringBuilder();
-        projectContent.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
-        projectContent.AppendLine("<Project Sdk=\"Microsoft.NET.Sdk\">");
-        projectContent.AppendLine("  <PropertyGroup>");
-        projectContent.AppendLine("    <TargetFramework>net8.0</TargetFramework>");
-        projectContent.AppendLine("    <ImplicitUsings>enable</ImplicitUsings>");
-        projectContent.AppendLine("    <Nullable>enable</Nullable>");
-        projectContent.AppendLine($"    <RootNamespace>{projectName}</RootNamespace>");
-        projectContent.AppendLine($"    <AssemblyName>{projectName}</AssemblyName>");
-        projectContent.AppendLine("    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>");
-        projectContent.AppendLine($"    <Version>{packageVersion}</Version>");
-        projectContent.AppendLine($"    <FileVersion>{packageVersion}</FileVersion>");
-        projectContent.AppendLine($"    <AssemblyVersion>{packageVersion}</AssemblyVersion>");
-        projectContent.AppendLine("    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>");
-        projectContent.AppendLine("    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>");
-        projectContent.AppendLine($"    <PackageId>{projectName}</PackageId>");
-        projectContent.AppendLine($"    <PackageVersion>{packageVersion}</PackageVersion>");
-        projectContent.AppendLine("    <Authors>Your Name or Company</Authors>");
-        projectContent.AppendLine("    <Description>Generated Entity Framework Core models for database access</Description>");
-        projectContent.AppendLine("  </PropertyGroup>");
-        projectContent.AppendLine("  <ItemGroup>");
-        projectContent.AppendLine("    <PackageReference Include=\"Microsoft.EntityFrameworkCore.SqlServer\" Version=\"8.0.0\" />");
-        projectContent.AppendLine("    <PackageReference Include=\"Microsoft.EntityFrameworkCore.Design\" Version=\"8.0.0\">");
-        projectContent.AppendLine("      <PrivateAssets>all</PrivateAssets>");
-        projectContent.AppendLine("      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>");
-        projectContent.AppendLine("    </PackageReference>");
-        projectContent.AppendLine("    <Compile Include=\"Models\\**\\*.cs\" />");
-        projectContent.AppendLine("  </ItemGroup>");
-        projectContent.AppendLine("</Project>");
+        var projectContent = $@"<?xml version=""1.0"" encoding=""utf-8""?>
+<Project Sdk=""Microsoft.NET.Sdk"">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>{projectName}</RootNamespace>
+    <AssemblyName>{projectName}</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Version>{packageVersion}</Version>
+    <FileVersion>{packageVersion}</FileVersion>
+    <AssemblyVersion>{packageVersion}</AssemblyVersion>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageId>{projectName}</PackageId>
+    <PackageVersion>{packageVersion}</PackageVersion>
+    <Authors>Your Name or Company</Authors>
+    <Description>Generated Entity Framework Core models for database access</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include=""Microsoft.EntityFrameworkCore.SqlServer"" Version=""8.0.0"" />
+    <PackageReference Include=""Microsoft.EntityFrameworkCore.Design"" Version=""8.0.0"">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include=""Models\**\*.cs"" />
+  </ItemGroup>
+</Project>";
 
-        File.WriteAllText(projectPath, projectContent.ToString());
+        File.WriteAllText(projectPath, projectContent);
         Log($"Created project file: {projectPath}");
     }
 
@@ -234,21 +231,17 @@ public class SolutionGenerator
         var optionsBuilder = new DbContextOptionsBuilder<DbContext>();
         optionsBuilder.UseSqlServer(GetDatabaseSpecificConnectionString(_connectionString, database));
 
-        // Create a new ServiceCollection and register the required services
         var serviceCollection = new ServiceCollection()
             .AddEntityFrameworkSqlServer()
             .AddDbContext<DbContext>(options => options.UseSqlServer(GetDatabaseSpecificConnectionString(_connectionString, database)))
             .AddEntityFrameworkDesignTimeServices()
             .AddSingleton<IOperationReporter>(new OperationReporter(_logger));
 
-        // Add required services for scaffolding
         serviceCollection.AddEntityFrameworkDesignTimeServices();
         new SqlServerDesignTimeServices().ConfigureDesignTimeServices(serviceCollection);
 
-        // Build the service provider
         var serviceProvider = serviceCollection.BuildServiceProvider();
 
-        // Get the required service
         var scaffolder = serviceProvider.GetRequiredService<IReverseEngineerScaffolder>();
 
         var dbOptions = new DatabaseModelFactoryOptions();
@@ -284,31 +277,7 @@ public class SolutionGenerator
 
         Log($"Saved {scaffoldedModel.AdditionalFiles.Count + 1} files to {outputDir}");
 
-        UpdateProjectFile(projectPath);
-        Log($"Updated project file: {projectPath}");
-    }
-
-    private void UpdateProjectFile(string projectPath)
-    {
-        var projectXml = XDocument.Load(projectPath);
-        var itemGroup = projectXml.Root?.Elements("ItemGroup").FirstOrDefault();
-
-        if (itemGroup == null)
-        {
-            itemGroup = new XElement("ItemGroup");
-            projectXml.Root?.Add(itemGroup);
-        }
-        else
-        {
-            // Remove existing Compile elements to avoid duplicates
-            itemGroup.Elements("Compile").Remove();
-        }
-
-        // Add the Compile element for Models
-        itemGroup.Add(new XElement("Compile", new XAttribute("Include", "Models\\**\\*.cs")));
-
-        // Save the updated project file
-        projectXml.Save(projectPath);
+        Log($"Generated EF Core model for database: {database}");
     }
 
     private async Task CompileSolutionAsync(string solutionPath)
@@ -368,14 +337,7 @@ public class SolutionGenerator
     {
         Log("Generating NuGet packages");
         var solutionDir = Path.GetDirectoryName(solutionPath)!;
-        Log($"Solution directory: {solutionDir}");
-        
-        var outputDir = Path.GetDirectoryName(solutionDir)!; // Go up one level from src
-        Log($"Output directory: {outputDir}");
-        
-        var artifactsDir = Path.Combine(outputDir, "artifacts");
-        Log($"Artifacts directory: {artifactsDir}");
-        
+        var artifactsDir = Path.Combine(_outputPath, "artifacts");
         Directory.CreateDirectory(artifactsDir);
 
         var projectDirs = Directory.GetDirectories(Path.Combine(solutionDir, "DAL"));
@@ -402,15 +364,18 @@ public class SolutionGenerator
             };
 
             process.Start();
+            var output = await process.StandardOutput.ReadToEndAsync();
+            var error = await process.StandardError.ReadToEndAsync();
             await process.WaitForExitAsync();
 
             if (process.ExitCode != 0)
             {
-                var error = await process.StandardError.ReadToEndAsync();
+                Log($"Error generating NuGet package for {projectName}: {error}");
                 throw new Exception($"NuGet package generation failed for {projectName}: {error}");
             }
 
             Log($"Generated NuGet package for {projectName}");
+            Log($"Output: {output}");
         }
 
         Log($"All NuGet packages generated and copied to {artifactsDir}");
@@ -429,16 +394,10 @@ public class SolutionGenerator
         var builder = new SqlConnectionStringBuilder(connectionString);
         var dataSource = builder.DataSource;
 
-        // Replace backslashes with underscores
         var serverName = dataSource.Replace('\\', '_');
-
-        // Remove port if present
         serverName = serverName.Split(',')[0];
-
-        // Remove any non-alphanumeric characters except underscores
         serverName = Regex.Replace(serverName, "[^a-zA-Z0-9_]", "");
 
-        // Ensure the name starts with a letter
         if (!char.IsLetter(serverName[0]))
         {
             serverName = "Server" + serverName;
@@ -460,7 +419,6 @@ public class SolutionGenerator
         _logger.LogInformation(message);
     }
 
-
     private async Task CreateSolutionFileWithHeaderAsync(string solutionPath)
     {
         Log($"Creating solution file with header at: {solutionPath}");
@@ -478,11 +436,11 @@ public class SolutionGenerator
         solutionContent.AppendLine("\t\tHideSolutionNode = FALSE");
         solutionContent.AppendLine("\tEndGlobalSection");
         solutionContent.AppendLine("EndGlobal");
-    
+
         await File.WriteAllTextAsync(solutionPath, solutionContent.ToString());
         Log($"Solution file created successfully at: {solutionPath}");
     }
-    
+
     private async Task AddProjectToSolutionAsync(string solutionPath, string projectPath, string projectName)
     {
         Log($"Adding project to solution: {projectName}");
@@ -492,58 +450,55 @@ public class SolutionGenerator
         var solutionContent = await File.ReadAllTextAsync(solutionPath);
         var lines = solutionContent.Split(Environment.NewLine).ToList();
 
-        // Find the position to insert the new project
         int insertIndex = lines.FindIndex(l => l.StartsWith("Global"));
         if (insertIndex == -1)
         {
             insertIndex = lines.Count;
         }
 
-        // Insert the new project
         lines.Insert(insertIndex, $"Project(\"{{9A19103F-16F7-4668-BE54-9A1E7A4F7556}}\") = \"{projectName}\", \"{relativeProjectPath.Replace('\\', '/')}\", \"{{{projectGuid}}}\"");
         lines.Insert(insertIndex + 1, "EndProject");
 
-        // Find or create the GlobalSection(ProjectConfigurationPlatforms) section
         int configIndex = lines.FindIndex(l => l.Trim().StartsWith("GlobalSection(ProjectConfigurationPlatforms) = postSolution"));
         if (configIndex == -1)
         {
-            // If the section doesn't exist, create it
             configIndex = lines.FindIndex(l => l.Trim().StartsWith("GlobalSection(SolutionProperties)"));
             if (configIndex == -1)
             {
-                configIndex = lines.Count - 1; // Insert before the last "EndGlobal"
+                configIndex = lines.Count - 1;
             }
             lines.Insert(configIndex, "\tGlobalSection(ProjectConfigurationPlatforms) = postSolution");
             lines.Insert(configIndex + 1, "\tEndGlobalSection");
         }
 
-        // Add the new project configurations
         lines.Insert(configIndex + 1, $"\t\t{{{projectGuid}}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU");
         lines.Insert(configIndex + 2, $"\t\t{{{projectGuid}}}.Debug|Any CPU.Build.0 = Debug|Any CPU");
         lines.Insert(configIndex + 3, $"\t\t{{{projectGuid}}}.Release|Any CPU.ActiveCfg = Release|Any CPU");
         lines.Insert(configIndex + 4, $"\t\t{{{projectGuid}}}.Release|Any CPU.Build.0 = Release|Any CPU");
 
-        // Write the updated content back to the file
         await File.WriteAllLinesAsync(solutionPath, lines);
 
         Log($"Added project to solution: {projectName}");
-    }    
-
-    public class DatabaseMask
-    {
-        public string Pattern { get; set; }
-        public Regex Regex { get; set; }
-
-        public DatabaseMask(string pattern)
-        {
-            Pattern = pattern;
-            Regex = new Regex(WildcardToRegex(pattern), RegexOptions.IgnoreCase);
-        }
-
-        private static string WildcardToRegex(string pattern)
-        {
-            return "^" + Regex.Escape(pattern).Replace("\\*", ".*").Replace("\\?", ".") + "$";
-        }
     }
-        
+
+    private async Task GenerateDatabaseProjectAsync(string database)
+    {
+        Log($"Generating project for database: {database}");
+        var projectName = $"{_assemblyPrefix}.DAL.{database}";
+        var projectPath = Path.Combine(_dalPath, database, $"{projectName}.csproj");
+
+        Log($"Project path: {projectPath}");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(projectPath)!);
+        Log($"Created directory: {Path.GetDirectoryName(projectPath)}");
+
+        CreateProjectFile(projectPath, projectName, _packageVersion);
+        Log($"Created project file: {projectPath}");
+
+        await AddProjectToSolutionAsync(_solutionPath, projectPath, projectName);
+        Log($"Added project to solution: {projectName}");
+
+        await GenerateEfCoreModelAsync(database, projectPath);
+        Log($"Generated EF Core model for database: {database}");
+    }
 }

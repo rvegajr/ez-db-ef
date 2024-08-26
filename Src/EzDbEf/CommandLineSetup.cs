@@ -37,6 +37,11 @@ class CommandLineSetup
             () => "1.0.0",
             "Version for generated NuGet packages");
 
+        var generateApiOption = new Option<bool>(
+            "--generate-api",
+            () => false,
+            "Generate API project");
+
         var rootCommand = new RootCommand("EzDbEf - Easy Database Entity Framework Generator")
             {
                 connectionStringOption,
@@ -44,18 +49,19 @@ class CommandLineSetup
                 outputPathOption,
                 assemblyPrefixOption,
                 verboseOption,
-                packageVersionOption
+                packageVersionOption,
+                generateApiOption
             };
-        rootCommand.SetHandler(async (string connectionStringOrServerName, string[] dbMasks, string outputPath, string assemblyPrefix, bool verbose, string packageVersion) =>
+        rootCommand.SetHandler(async (string connectionStringOrServerName, string[] dbMasks, string outputPath, string assemblyPrefix, bool verbose, string packageVersion, bool generateApi) =>
         {
             var logger = serviceProvider.GetRequiredService<ILogger<CommandLineSetup>>();
-            await ExecuteAsync(connectionStringOrServerName, dbMasks, outputPath, assemblyPrefix, verbose, packageVersion, logger);
-        }, connectionStringOption, dbMasksOption, outputPathOption, assemblyPrefixOption, verboseOption, packageVersionOption);
+            await ExecuteAsync(connectionStringOrServerName, dbMasks, outputPath, assemblyPrefix, verbose, packageVersion, generateApi, logger);
+        }, connectionStringOption, dbMasksOption, outputPathOption, assemblyPrefixOption, verboseOption, packageVersionOption, generateApiOption);
 
         return rootCommand;
     }
 
-    private static async Task ExecuteAsync(string connectionStringOrServerName, string[] dbMasks, string outputPath, string assemblyPrefix, bool verbose, string packageVersion, ILogger logger)
+    private static async Task ExecuteAsync(string connectionStringOrServerName, string[] dbMasks, string outputPath, string assemblyPrefix, bool verbose, string packageVersion, bool generateApi, ILogger logger)
     {
         string connectionString = ValidateAndGetConnectionString(connectionStringOrServerName, verbose, logger);
 
@@ -68,7 +74,13 @@ class CommandLineSetup
         var parsedMasks = DatabaseMaskParser.ParseMasks(dbMasks);
         
         var solutionGenerator = new SolutionGenerator(connectionString, parsedMasks, outputPath, assemblyPrefix, logger, packageVersion);
-        await solutionGenerator.GenerateAsync();
+        string solutionPath = await solutionGenerator.GenerateAsync();
+
+        if (generateApi)
+        {
+            var apiGenerator = new ApiGenerator(outputPath, assemblyPrefix, logger, connectionString, Path.GetFileName(solutionPath));
+            await apiGenerator.GenerateAsync();
+        }
     }
 
     private static string ValidateAndGetConnectionString(string input, bool verbose, ILogger logger)
