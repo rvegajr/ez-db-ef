@@ -1,32 +1,37 @@
 ﻿
 using System.Data;
+using System.Text;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Design;
+using Microsoft.EntityFrameworkCore.Design.Internal;
+using Microsoft.EntityFrameworkCore.Scaffolding;
+using Microsoft.EntityFrameworkCore.SqlServer.Design.Internal;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace EzDbEf;
 
 public class SolutionGenerator
 {
     private readonly string _connectionString;
-    private readonly List<DatabaseMaskParser.DatabaseObject> _parsedMasks;
+    private readonly List<DatabaseMaskParser.DatabaseObject> _databaseMasks;
     private readonly string _outputPath;
     private readonly string _assemblyPrefix;
     private readonly ILogger _logger;
-    private readonly string _serverName;
+    private readonly string _packageVersion;
+        private readonly string _serverName;
 
-    public SolutionGenerator(
-        string connectionString,
-        List<DatabaseMaskParser.DatabaseObject> parsedMasks,
-        string outputPath,
-        string assemblyPrefix,
-        ILogger logger)
+    public SolutionGenerator(string connectionString, List<DatabaseMaskParser.DatabaseObject> databaseMasks, string outputPath, string assemblyPrefix, ILogger logger, string packageVersion)
     {
         _connectionString = connectionString;
-        _parsedMasks = parsedMasks;
+        _databaseMasks = databaseMasks;
         _outputPath = outputPath;
         _assemblyPrefix = assemblyPrefix;
         _logger = logger;
+        _packageVersion = packageVersion;
         _serverName = ExtractServerName(connectionString);
     }
 
+    
     public async Task GenerateAsync()
     {
         Log($"Starting solution generation for server: {_serverName}");
@@ -34,7 +39,9 @@ public class SolutionGenerator
         var solutionPath = Path.Combine(_outputPath, $"{_serverName}.sln");
         var solutionFile = new FileInfo(solutionPath);
         solutionFile.Directory?.Create();
-        File.WriteAllText(solutionPath, "");
+        
+        // Create the solution file with the proper header
+        await CreateSolutionFileWithHeaderAsync(solutionPath);
         Log($"Created solution file: {solutionPath}");
 
         var databases = await GetDatabasesAsync();
@@ -49,7 +56,7 @@ public class SolutionGenerator
             Directory.CreateDirectory(Path.GetDirectoryName(projectPath)!);
             Log($"Created directory: {Path.GetDirectoryName(projectPath)}");
 
-            CreateProjectFile(projectPath, projectName);
+            CreateProjectFile(projectPath, projectName, _packageVersion);
             Log($"Created project file: {projectPath}");
 
             await AddProjectToSolutionAsync(solutionPath, projectPath, projectName);
@@ -103,21 +110,22 @@ public class SolutionGenerator
             Log("Executing SQL command");
             using var reader = await command.ExecuteReaderAsync();
 
+
             Log("Processing query results");
             while (await reader.ReadAsync())
             {
                 var dbName = reader.GetString(0);
                 Log($"Processing database: {dbName}");
 
-                if (!systemDatabases.Contains(dbName) &&
-                    _parsedMasks.Any(mask => DatabaseMaskParser.IsMatch(mask, dbName, "*", "*")))
-                {
-                    databases.Add(dbName);
+                    if (!systemDatabases.Contains(dbName) &&
+                        (_databaseMasks.Count == 0 || _databaseMasks.Any(mask => mask.Regex.IsMatch(dbName))))
+                    {
+                        databases.Add(dbName);
                     Log($"Found matching database: {dbName}");
                 }
                 else
                 {
-                    Log($"Skipping non-matching database: {dbName}");
+                    Log($"Skipping database: {dbName}");
                 }
             }
 
@@ -176,44 +184,43 @@ public class SolutionGenerator
         }
     }
 
-    private void CreateProjectFile(string projectPath, string projectName)
+    private void CreateProjectFile(string projectPath, string projectName, string packageVersion)
     {
         Log($"Creating project file: {projectPath}");
-        var projectXml = new XElement("Project",
-            new XAttribute("Sdk", "Microsoft.NET.Sdk"),
-            new XElement("PropertyGroup",
-                new XElement("TargetFramework", "net8.0"),
-                new XElement("ImplicitUsings", "enable"),
-                new XElement("Nullable", "enable"),
-                new XElement("RootNamespace", projectName),
-                new XElement("AssemblyName", projectName)
-            ),
-            new XElement("ItemGroup",
-                new XElement("PackageReference",
-                    new XAttribute("Include", "Microsoft.EntityFrameworkCore.SqlServer"),
-                    new XAttribute("Version", "8.0.0")
-                ),
-                new XElement("PackageReference",
-                    new XAttribute("Include", "Microsoft.EntityFrameworkCore.Design"),
-                    new XAttribute("Version", "8.0.0")
-                )
-            )
-        );
+        var projectContent = new StringBuilder();
+        projectContent.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
+        projectContent.AppendLine("<Project Sdk=\"Microsoft.NET.Sdk\">");
+        projectContent.AppendLine("  <PropertyGroup>");
+        projectContent.AppendLine("    <TargetFramework>net8.0</TargetFramework>");
+        projectContent.AppendLine("    <ImplicitUsings>enable</ImplicitUsings>");
+        projectContent.AppendLine("    <Nullable>enable</Nullable>");
+        projectContent.AppendLine($"    <RootNamespace>{projectName}</RootNamespace>");
+        projectContent.AppendLine($"    <AssemblyName>{projectName}</AssemblyName>");
+        projectContent.AppendLine("    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>");
+        projectContent.AppendLine($"    <Version>{packageVersion}</Version>");
+        projectContent.AppendLine($"    <FileVersion>{packageVersion}</FileVersion>");
+        projectContent.AppendLine($"    <AssemblyVersion>{packageVersion}</AssemblyVersion>");
+        projectContent.AppendLine("    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>");
+        projectContent.AppendLine("    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>");
+        projectContent.AppendLine($"    <PackageId>{projectName}</PackageId>");
+        projectContent.AppendLine($"    <PackageVersion>{packageVersion}</PackageVersion>");
+        projectContent.AppendLine("    <Authors>Your Name or Company</Authors>");
+        projectContent.AppendLine("    <Description>Generated Entity Framework Core models for database access</Description>");
+        projectContent.AppendLine("  </PropertyGroup>");
+        projectContent.AppendLine("  <ItemGroup>");
+        projectContent.AppendLine("    <PackageReference Include=\"Microsoft.EntityFrameworkCore.SqlServer\" Version=\"8.0.0\" />");
+        projectContent.AppendLine("    <PackageReference Include=\"Microsoft.EntityFrameworkCore.Design\" Version=\"8.0.0\">");
+        projectContent.AppendLine("      <PrivateAssets>all</PrivateAssets>");
+        projectContent.AppendLine("      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>");
+        projectContent.AppendLine("    </PackageReference>");
+        projectContent.AppendLine("  </ItemGroup>");
+        projectContent.AppendLine("  <ItemGroup>");
+        projectContent.AppendLine("    <Compile Include=\"Models\\**\\*.cs\" />");
+        projectContent.AppendLine("  </ItemGroup>");
+        projectContent.AppendLine("</Project>");
 
-        projectXml.Save(projectPath);
-    }
-
-    private async Task AddProjectToSolutionAsync(string solutionPath, string projectPath, string projectName)
-    {
-        Log($"Adding project to solution: {projectName}");
-        var projectGuid = Guid.NewGuid().ToString().ToUpper();
-        var relativeProjectPath = Path.GetRelativePath(Path.GetDirectoryName(solutionPath)!, projectPath);
-
-        var projectEntry = $@"Project(""{{9A19103F-16F7-4668-BE54-9A1E7A4F7556}}"") = ""{projectName}"", ""{relativeProjectPath.Replace('\\', '/')}"", ""{{{projectGuid}}}""
-EndProject
-";
-
-        await File.AppendAllTextAsync(solutionPath, projectEntry);
+        File.WriteAllText(projectPath, projectContent.ToString());
+        Log($"Created project file: {projectPath}");
     }
 
     private async Task GenerateEfCoreModelAsync(string database, string projectPath)
@@ -227,12 +234,21 @@ EndProject
         var optionsBuilder = new DbContextOptionsBuilder<DbContext>();
         optionsBuilder.UseSqlServer(GetDatabaseSpecificConnectionString(_connectionString, database));
 
+        // Create a new ServiceCollection and register the required services
         var serviceCollection = new ServiceCollection()
             .AddEntityFrameworkSqlServer()
-            .AddLogging();
+            .AddDbContext<DbContext>(options => options.UseSqlServer(GetDatabaseSpecificConnectionString(_connectionString, database)))
+            .AddEntityFrameworkDesignTimeServices()
+            .AddSingleton<IOperationReporter>(new OperationReporter(_logger));
 
+        // Add required services for scaffolding
+        serviceCollection.AddEntityFrameworkDesignTimeServices();
+        new SqlServerDesignTimeServices().ConfigureDesignTimeServices(serviceCollection);
+
+        // Build the service provider
         var serviceProvider = serviceCollection.BuildServiceProvider();
 
+        // Get the required service
         var scaffolder = serviceProvider.GetRequiredService<IReverseEngineerScaffolder>();
 
         var dbOptions = new DatabaseModelFactoryOptions();
@@ -333,13 +349,38 @@ namespace {_assemblyPrefix}.DAL.{database}.Models
             }
         };
 
+        var outputBuilder = new StringBuilder();
+        var errorBuilder = new StringBuilder();
+
+        process.OutputDataReceived += (sender, e) => 
+        {
+            if (e.Data != null)
+            {
+                outputBuilder.AppendLine(e.Data);
+                Log($"Build output: {e.Data}");
+            }
+        };
+        process.ErrorDataReceived += (sender, e) => 
+        {
+            if (e.Data != null)
+            {
+                errorBuilder.AppendLine(e.Data);
+                Log($"Build error: {e.Data}");
+            }
+        };
+
         process.Start();
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
         await process.WaitForExitAsync();
 
         if (process.ExitCode != 0)
         {
-            var error = await process.StandardError.ReadToEndAsync();
-            throw new Exception($"Solution compilation failed: {error}");
+            var fullOutput = outputBuilder.ToString();
+            var fullError = errorBuilder.ToString();
+            Log($"Full build output:\n{fullOutput}");
+            Log($"Full build errors:\n{fullError}");
+            throw new Exception($"Solution compilation failed. Exit code: {process.ExitCode}\nErrors: {fullError}");
         }
 
         Log("Solution compiled successfully");
@@ -433,4 +474,91 @@ namespace {_assemblyPrefix}.DAL.{database}.Models
     {
         _logger.LogInformation(message);
     }
+
+
+    private async Task CreateSolutionFileWithHeaderAsync(string solutionPath)
+    {
+        Log($"Creating solution file with header at: {solutionPath}");
+        var solutionContent = new StringBuilder();
+        solutionContent.AppendLine("Microsoft Visual Studio Solution File, Format Version 12.00");
+        solutionContent.AppendLine("# Visual Studio Version 17");
+        solutionContent.AppendLine("VisualStudioVersion = 17.0.31903.59");
+        solutionContent.AppendLine("MinimumVisualStudioVersion = 10.0.40219.1");
+        solutionContent.AppendLine("Global");
+        solutionContent.AppendLine("\tGlobalSection(SolutionConfigurationPlatforms) = preSolution");
+        solutionContent.AppendLine("\t\tDebug|Any CPU = Debug|Any CPU");
+        solutionContent.AppendLine("\t\tRelease|Any CPU = Release|Any CPU");
+        solutionContent.AppendLine("\tEndGlobalSection");
+        solutionContent.AppendLine("\tGlobalSection(SolutionProperties) = preSolution");
+        solutionContent.AppendLine("\t\tHideSolutionNode = FALSE");
+        solutionContent.AppendLine("\tEndGlobalSection");
+        solutionContent.AppendLine("EndGlobal");
+    
+        await File.WriteAllTextAsync(solutionPath, solutionContent.ToString());
+        Log($"Solution file created successfully at: {solutionPath}");
+    }
+    
+    private async Task AddProjectToSolutionAsync(string solutionPath, string projectPath, string projectName)
+    {
+        Log($"Adding project to solution: {projectName}");
+        var projectGuid = Guid.NewGuid().ToString().ToUpper();
+        var relativeProjectPath = Path.GetRelativePath(Path.GetDirectoryName(solutionPath)!, projectPath);
+
+        var solutionContent = await File.ReadAllTextAsync(solutionPath);
+        var lines = solutionContent.Split(Environment.NewLine).ToList();
+
+        // Find the position to insert the new project
+        int insertIndex = lines.FindIndex(l => l.StartsWith("Global"));
+        if (insertIndex == -1)
+        {
+            insertIndex = lines.Count;
+        }
+
+        // Insert the new project
+        lines.Insert(insertIndex, $"Project(\"{{9A19103F-16F7-4668-BE54-9A1E7A4F7556}}\") = \"{projectName}\", \"{relativeProjectPath.Replace('\\', '/')}\", \"{{{projectGuid}}}\"");
+        lines.Insert(insertIndex + 1, "EndProject");
+
+        // Find or create the GlobalSection(ProjectConfigurationPlatforms) section
+        int configIndex = lines.FindIndex(l => l.Trim().StartsWith("GlobalSection(ProjectConfigurationPlatforms) = postSolution"));
+        if (configIndex == -1)
+        {
+            // If the section doesn't exist, create it
+            configIndex = lines.FindIndex(l => l.Trim().StartsWith("GlobalSection(SolutionProperties)"));
+            if (configIndex == -1)
+            {
+                configIndex = lines.Count - 1; // Insert before the last "EndGlobal"
+            }
+            lines.Insert(configIndex, "\tGlobalSection(ProjectConfigurationPlatforms) = postSolution");
+            lines.Insert(configIndex + 1, "\tEndGlobalSection");
+        }
+
+        // Add the new project configurations
+        lines.Insert(configIndex + 1, $"\t\t{{{projectGuid}}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU");
+        lines.Insert(configIndex + 2, $"\t\t{{{projectGuid}}}.Debug|Any CPU.Build.0 = Debug|Any CPU");
+        lines.Insert(configIndex + 3, $"\t\t{{{projectGuid}}}.Release|Any CPU.ActiveCfg = Release|Any CPU");
+        lines.Insert(configIndex + 4, $"\t\t{{{projectGuid}}}.Release|Any CPU.Build.0 = Release|Any CPU");
+
+        // Write the updated content back to the file
+        await File.WriteAllLinesAsync(solutionPath, lines);
+
+        Log($"Added project to solution: {projectName}");
+    }    
+
+    public class DatabaseMask
+    {
+        public string Pattern { get; set; }
+        public Regex Regex { get; set; }
+
+        public DatabaseMask(string pattern)
+        {
+            Pattern = pattern;
+            Regex = new Regex(WildcardToRegex(pattern), RegexOptions.IgnoreCase);
+        }
+
+        private static string WildcardToRegex(string pattern)
+        {
+            return "^" + Regex.Escape(pattern).Replace("\\*", ".*").Replace("\\?", ".") + "$";
+        }
+    }
+        
 }

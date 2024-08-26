@@ -13,7 +13,6 @@ class Program
                  builder.AddConfiguration(new ConfigurationBuilder().Build())
                         .AddConsole()
                         .AddDebug() // This is the correct way to add Debug logger
-                        .AddEventLog()
                         .AddProvider(new FileLoggerProvider(LogFilePath))
                         .SetMinimumLevel(LogLevel.Debug);
              })
@@ -41,7 +40,7 @@ class Program
             if (System.Diagnostics.Debugger.IsAttached)
             {
                 Console.WriteLine("Press any key to exit...");
-                Console.ReadKey();
+                Console.Read();
             }
         }
     }

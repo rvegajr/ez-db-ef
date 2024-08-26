@@ -31,6 +31,11 @@ class CommandLineSetup
             "--verbose",
             () => false,
             "Enable verbose output");
+        
+        var packageVersionOption = new Option<string>(
+            "--package-version",
+            () => "1.0.0",
+            "Version for generated NuGet packages");
 
         var rootCommand = new RootCommand("EzDbEf - Easy Database Entity Framework Generator")
             {
@@ -38,19 +43,19 @@ class CommandLineSetup
                 dbMasksOption,
                 outputPathOption,
                 assemblyPrefixOption,
-                verboseOption
+                verboseOption,
+                packageVersionOption
             };
-
-        rootCommand.SetHandler(async (string connectionStringOrServerName, string[] dbMasks, string outputPath, string assemblyPrefix, bool verbose) =>
+        rootCommand.SetHandler(async (string connectionStringOrServerName, string[] dbMasks, string outputPath, string assemblyPrefix, bool verbose, string packageVersion) =>
         {
             var logger = serviceProvider.GetRequiredService<ILogger<CommandLineSetup>>();
-            await ExecuteAsync(connectionStringOrServerName, dbMasks, outputPath, assemblyPrefix, verbose, logger);
-        }, connectionStringOption, dbMasksOption, outputPathOption, assemblyPrefixOption, verboseOption);
+            await ExecuteAsync(connectionStringOrServerName, dbMasks, outputPath, assemblyPrefix, verbose, packageVersion, logger);
+        }, connectionStringOption, dbMasksOption, outputPathOption, assemblyPrefixOption, verboseOption, packageVersionOption);
 
         return rootCommand;
     }
 
-    private static async Task ExecuteAsync(string connectionStringOrServerName, string[] dbMasks, string outputPath, string assemblyPrefix, bool verbose, ILogger logger)
+    private static async Task ExecuteAsync(string connectionStringOrServerName, string[] dbMasks, string outputPath, string assemblyPrefix, bool verbose, string packageVersion, ILogger logger)
     {
         string connectionString = ValidateAndGetConnectionString(connectionStringOrServerName, verbose, logger);
 
@@ -61,8 +66,8 @@ class CommandLineSetup
         logger.LogInformation("Verbose: {Verbose}", verbose);
 
         var parsedMasks = DatabaseMaskParser.ParseMasks(dbMasks);
-
-        var solutionGenerator = new SolutionGenerator(connectionString, parsedMasks, outputPath, assemblyPrefix, logger);
+        
+        var solutionGenerator = new SolutionGenerator(connectionString, parsedMasks, outputPath, assemblyPrefix, logger, packageVersion);
         await solutionGenerator.GenerateAsync();
     }
 

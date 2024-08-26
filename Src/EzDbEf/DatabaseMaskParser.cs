@@ -1,10 +1,19 @@
-﻿namespace EzDbEf;
+﻿using System.Text.RegularExpressions;
+
+namespace EzDbEf;
 
 public class DatabaseMaskParser
 {
     public record DatabaseObject(string Database, string Schema, string Table, bool IsExcluded)
     {
         public override string ToString() => $"{Database}.{Schema}.{Table}";
+
+        public Regex Regex { get; } = new Regex(WildcardToRegex(Database), RegexOptions.IgnoreCase);
+
+        private static string WildcardToRegex(string pattern)
+        {
+            return "^" + Regex.Escape(pattern).Replace("\\*", ".*").Replace("\\?", ".") + "$";
+        }
     }
 
     public static List<DatabaseObject> ParseMasks(string[] masks)
