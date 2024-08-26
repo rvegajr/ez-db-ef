@@ -19,6 +19,7 @@ public class SolutionGenerator
     private readonly ILogger _logger;
     private readonly string _packageVersion;
         private readonly string _serverName;
+    private readonly string _solutionName;
 
     public SolutionGenerator(string connectionString, List<DatabaseMaskParser.DatabaseObject> databaseMasks, string outputPath, string assemblyPrefix, ILogger logger, string packageVersion)
     {
@@ -29,6 +30,7 @@ public class SolutionGenerator
         _logger = logger;
         _packageVersion = packageVersion;
         _serverName = ExtractServerName(connectionString);
+        _solutionName = $"{_serverName}Solution";
     }
 
     
@@ -36,11 +38,11 @@ public class SolutionGenerator
     {
         Log($"Starting solution generation for server: {_serverName}");
 
-        var solutionPath = Path.Combine(_outputPath, $"{_serverName}.sln");
-        var solutionFile = new FileInfo(solutionPath);
-        solutionFile.Directory?.Create();
-        
-        // Create the solution file with the proper header
+        var srcPath = Path.Combine(_outputPath, "src");
+        var solutionPath = Path.Combine(srcPath, $"{_solutionName}.sln");
+        var dalPath = Path.Combine(srcPath, "DAL");
+        Directory.CreateDirectory(dalPath);
+
         await CreateSolutionFileWithHeaderAsync(solutionPath);
         Log($"Created solution file: {solutionPath}");
 
@@ -51,7 +53,7 @@ public class SolutionGenerator
         {
             Log($"Processing database: {database}");
             var projectName = $"{_assemblyPrefix}.DAL.{database}";
-            var projectPath = Path.Combine(_outputPath, database, $"{projectName}.csproj");
+            var projectPath = Path.Combine(dalPath, database, $"{projectName}.csproj");
 
             Directory.CreateDirectory(Path.GetDirectoryName(projectPath)!);
             Log($"Created directory: {Path.GetDirectoryName(projectPath)}");
@@ -213,8 +215,6 @@ public class SolutionGenerator
         projectContent.AppendLine("      <PrivateAssets>all</PrivateAssets>");
         projectContent.AppendLine("      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>");
         projectContent.AppendLine("    </PackageReference>");
-        projectContent.AppendLine("  </ItemGroup>");
-        projectContent.AppendLine("  <ItemGroup>");
         projectContent.AppendLine("    <Compile Include=\"Models\\**\\*.cs\" />");
         projectContent.AppendLine("  </ItemGroup>");
         projectContent.AppendLine("</Project>");
@@ -284,53 +284,31 @@ public class SolutionGenerator
 
         Log($"Saved {scaffoldedModel.AdditionalFiles.Count + 1} files to {outputDir}");
 
-        await GenerateDbContextAsync(database, projectDir, outputDir);
-        Log($"Generated DbContext for database: {database}");
+        UpdateProjectFile(projectPath);
+        Log($"Updated project file: {projectPath}");
     }
 
-    private async Task GenerateDbContextAsync(string database, string projectDir, string outputDir)
+    private void UpdateProjectFile(string projectPath)
     {
-        Log($"Generating DbContext for database: {database}");
-        var dbContextName = $"{database}Context";
-        var dbContextPath = Path.Combine(outputDir, $"{dbContextName}.cs");
+        var projectXml = XDocument.Load(projectPath);
+        var itemGroup = projectXml.Root?.Elements("ItemGroup").FirstOrDefault();
 
-        var dbContextContent = $@"
-using Microsoft.EntityFrameworkCore;
+        if (itemGroup == null)
+        {
+            itemGroup = new XElement("ItemGroup");
+            projectXml.Root?.Add(itemGroup);
+        }
+        else
+        {
+            // Remove existing Compile elements to avoid duplicates
+            itemGroup.Elements("Compile").Remove();
+        }
 
-namespace {_assemblyPrefix}.DAL.{database}.Models
-{{
-    public partial class {dbContextName} : DbContext
-    {{
-        public {dbContextName}(DbContextOptions<{dbContextName}> options)
-            : base(options)
-        {{
-        }}
+        // Add the Compile element for Models
+        itemGroup.Add(new XElement("Compile", new XAttribute("Include", "Models\\**\\*.cs")));
 
-        protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
-        {{
-            if (!optionsBuilder.IsConfigured)
-            {{
-                optionsBuilder.UseSqlServer(""Name=ConnectionStrings:{database}"");
-            }}
-        }}
-
-        protected override void OnModelCreating(ModelBuilder modelBuilder)
-        {{
-            OnModelCreatingPartial(modelBuilder);
-        }}
-
-        partial void OnModelCreatingPartial(ModelBuilder modelBuilder);
-    }}
-}}";
-
-        await File.WriteAllTextAsync(dbContextPath, dbContextContent);
-
-        // Update .csproj file to include the generated files
-        var projectXml = XElement.Load(Path.Combine(projectDir, $"{_assemblyPrefix}.DAL.{database}.csproj"));
-        var itemGroup = projectXml.Elements("ItemGroup").FirstOrDefault() ?? new XElement("ItemGroup");
-        itemGroup.Add(new XElement("Compile", new XAttribute("Include", $"Models\\**\\*.cs")));
-        projectXml.Add(itemGroup);
-        projectXml.Save(Path.Combine(projectDir, $"{_assemblyPrefix}.DAL.{database}.csproj"));
+        // Save the updated project file
+        projectXml.Save(projectPath);
     }
 
     private async Task CompileSolutionAsync(string solutionPath)
@@ -390,10 +368,17 @@ namespace {_assemblyPrefix}.DAL.{database}.Models
     {
         Log("Generating NuGet packages");
         var solutionDir = Path.GetDirectoryName(solutionPath)!;
-        var artifactsDir = Path.Combine(solutionDir, "artifacts");
+        Log($"Solution directory: {solutionDir}");
+        
+        var outputDir = Path.GetDirectoryName(solutionDir)!; // Go up one level from src
+        Log($"Output directory: {outputDir}");
+        
+        var artifactsDir = Path.Combine(outputDir, "artifacts");
+        Log($"Artifacts directory: {artifactsDir}");
+        
         Directory.CreateDirectory(artifactsDir);
 
-        var projectDirs = Directory.GetDirectories(solutionDir);
+        var projectDirs = Directory.GetDirectories(Path.Combine(solutionDir, "DAL"));
 
         foreach (var projectDir in projectDirs)
         {
