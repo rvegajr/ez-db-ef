@@ -1,45 +1,42 @@
-﻿namespace EzDbEf;
+﻿using Microsoft.Extensions.Logging;
+using System;
+using System.IO;
 
-class FileLoggerProvider : ILoggerProvider
+namespace EzDbEf
 {
-    private readonly string _path;
-
-    public FileLoggerProvider(string path)
+    public class FileLoggerProvider : ILoggerProvider
     {
-        _path = path;
-    }
+        private readonly string _path;
 
-    public ILogger CreateLogger(string categoryName)
-    {
-        return new FileLogger(_path);
-    }
-
-    public void Dispose() { }
-}
-
-class FileLogger : ILogger
-{
-    private readonly string _path;
-
-    public FileLogger(string path)
-    {
-        _path = path;
-    }
-
-    public IDisposable BeginScope<TState>(TState state) => null!;
-
-    public bool IsEnabled(LogLevel logLevel) => true;
-
-    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-    {
-        var message = formatter(state, exception);
-        var logEntry = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{logLevel}] {message}";
-
-        if (exception != null)
+        public FileLoggerProvider(string path)
         {
-            logEntry += $"\nException: {exception}";
+            _path = path;
         }
 
-        File.AppendAllText(_path, logEntry + Environment.NewLine);
+        public ILogger CreateLogger(string categoryName)
+        {
+            return new FileLogger(_path);
+        }
+
+        public void Dispose() { }
+
+        class FileLogger : ILogger
+        {
+            private readonly string _path;
+
+            public FileLogger(string path)
+            {
+                _path = path;
+            }
+
+            public IDisposable BeginScope<TState>(TState state) where TState : notnull => default!;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            {
+                File.AppendAllText(_path, formatter(state, exception) + Environment.NewLine);
+            }
+        }
     }
 }

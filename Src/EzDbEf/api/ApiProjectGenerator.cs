@@ -59,7 +59,7 @@ namespace EzDbEf
         {
             _logger.LogInformation("Adding API project to solution");
             
-            var solutionPath = Path.Combine(_outputPath, "src", $"{_solutionName}.sln");
+            var solutionPath = Path.Combine(_outputPath, "src", $"{_solutionName}");
             var projectName = $"{_assemblyPrefix}.API";
             var projectFile = Path.Combine(apiProjectPath, $"{projectName}.csproj");
 
@@ -69,15 +69,21 @@ namespace EzDbEf
 
         public async Task AddProjectReferencesAsync(string apiProjectPath)
         {
-            _logger.LogInformation("Adding project references");
-            
-            var dalProjectsPath = Path.Combine(_outputPath, "src", "DAL");
-            var dalProjects = Directory.GetDirectories(dalProjectsPath)
-                .Select(dir => Path.Combine(dir, $"{Path.GetFileName(dir)}.csproj"))
-                .ToList();
-
             var apiProjectFile = Path.Combine(apiProjectPath, $"{_assemblyPrefix}.API.csproj");
+            _logger.LogInformation($"Searching for DAL project files to add to {apiProjectFile}");
 
+            var dalProjectsPath = Path.Combine(_outputPath, "src", "DAL");
+            _logger.LogInformation($"DAL projects path: {dalProjectsPath}");
+
+            if (!Directory.Exists(dalProjectsPath))
+            {
+                _logger.LogWarning($"DAL projects directory not found: {dalProjectsPath}");
+                return;
+            }
+
+            var dalProjects = Directory.GetFiles(dalProjectsPath, "*.csproj", SearchOption.AllDirectories);
+
+            _logger.LogInformation($"Found {dalProjects.Length} DAL project files:");
             foreach (var dalProject in dalProjects)
             {
                 await RunDotNetCommandAsync("add", apiProjectFile, "reference", dalProject);

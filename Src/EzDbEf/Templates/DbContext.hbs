@@ -1,0 +1,28 @@
+using Microsoft.EntityFrameworkCore;
+
+namespace {{namespace}};
+
+public partial class {{class}} : DbContext
+{
+    public {{class}}(DbContextOptions<{{class}}> options) : base(options)
+    {
+    }
+
+    {{#each entities}}
+    public virtual DbSet<{{name}}> {{pluralName}} { get; set; }
+    {{/each}}
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        {{#each entities}}
+        modelBuilder.Entity<{{name}}>(entity =>
+        {
+            {{#each properties}}
+            {{#if isPrimaryKey}}
+            entity.HasKey(e => e.{{name}});
+            {{/if}}
+            {{/each}}
+        });
+        {{/each}}
+    }
+}

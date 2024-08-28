@@ -23,3 +23,5 @@ global using System.Threading.Tasks;
 global using Microsoft.Extensions.Logging;
 global using System.Net.NetworkInformation;
 global using Microsoft.Extensions.Logging.Debug;
+
+global using Newtonsoft.Json;

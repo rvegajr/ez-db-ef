@@ -1,0 +1,524 @@
+<<START_FILE>> Infrastructure/ApiConfig.cs
+namespace MultiEdmODataApi;
+
+public static class ApiConfig
+{
+    public static void ConfigureOData(ODataOptions opt)
+    {
+        opt.Select()
+           .Expand()
+           .Filter()
+           .OrderBy()
+           .SetMaxTop(100)
+           .Count();
+    }
+
+    public static void ConfigureSwagger(SwaggerGenOptions c)
+    {
+        c.SwaggerDoc("mockdb1", new OpenApiInfo { Title = "Mock DB 1 API", Version = "v1" });
+        c.SwaggerDoc("mockdb2", new OpenApiInfo { Title = "Mock DB 2 API", Version = "v1" });
+        c.SwaggerDoc("mockdb3", new OpenApiInfo { Title = "Mock DB 3 API", Version = "v1" });
+        c.DocInclusionPredicate((docName, apiDesc) =>
+        {
+            return apiDesc.RelativePath?.Contains(docName) ?? false;
+        });
+    }
+
+    public static void ConfigureSwaggerUI(SwaggerUIOptions c)
+    {
+        c.SwaggerEndpoint("/swagger/mockdb1/swagger.json", "Mock DB 1 API v1");
+        c.SwaggerEndpoint("/swagger/mockdb2/swagger.json", "Mock DB 2 API v1");
+        c.SwaggerEndpoint("/swagger/mockdb3/swagger.json", "Mock DB 3 API v1");
+    }
+
+    public static List<IEdmModel> GetEdmModels()
+    {
+        return new List<IEdmModel>
+        {
+            MockDb1EdmModel.GetEdmModel(),
+            MockDb2EdmModel.GetEdmModel(),
+            MockDb3EdmModel.GetEdmModel()
+        };
+    }
+}
+
+<<END_FILE>>
+<<START_FILE>> Infrastructure/ExceptionCheckResult.cs
+namespace MultiEdmODataApi;
+
+public class ExceptionCheckResult<T>
+{
+    public bool IsValid { get; set; } = true;
+    public T ReturnValue { get; set; }
+    public Exception Exception { get; private set; }
+    public string ClassName { get; private set; }
+    public string MethodName { get; private set; }
+
+    public void RaiseException(Exception ex, string className, string methodName)
+    {
+        IsValid = false;
+        Exception = ex;
+        ClassName = className;
+        MethodName = methodName;
+    }
+
+    public string GetExceptionMessage()
+    {
+        if (Exception == null)
+            return string.Empty;
+
+        return $"An exception occurred in {ClassName}.{MethodName}: {Exception.Message}";
+    }
+}
+<<END_FILE>>
+<<START_FILE>> Infrastructure/GenericRepository.cs
+namespace MultiEdmODataApi;
+
+public interface IGenericRepository<TEntity, TKey> where TEntity : class
+{
+    Task<IEnumerable<TEntity>> Get();
+    IQueryable<TEntity> GetAsQueryable();
+    Task<TEntity> GetByKey(TKey key);
+    Task<ExceptionCheckResult<TEntity>> Create(TEntity entity);
+    Task<ExceptionCheckResult<TEntity>> Update(TKey key, TEntity entity);
+    Task<ExceptionCheckResult<TEntity>> Delete(TKey key);
+    TKey GetPrimaryKey(TEntity entity);
+}
+
+public abstract class GenericRepositoryBase<TEntity, TKey> : IGenericRepository<TEntity, TKey> where TEntity : class
+{
+    protected DbContext _db { get; set; }
+    protected DbSet<TEntity> _dbSet;
+
+    public GenericRepositoryBase(DbContext context)
+    {
+        _db = context;
+        _dbSet = _db.Set<TEntity>();
+    }
+
+    protected abstract DbContext CreateContext();
+
+    public GenericRepositoryBase()
+    {
+        _db = CreateContext();
+        _dbSet = _db.Set<TEntity>();
+    }
+
+    public virtual async Task<IEnumerable<TEntity>> Get()
+    {
+        return await _dbSet.ToListAsync();
+    }
+
+    public virtual IQueryable<TEntity> GetAsQueryable()
+    {
+        return _dbSet.AsQueryable();
+    }
+
+    public virtual async Task<TEntity> GetByKey(TKey key)
+    {
+        return await _dbSet.FindAsync(key);
+    }
+
+    public virtual async Task<ExceptionCheckResult<TEntity>> Create(TEntity entity)
+    {
+        var result = new ExceptionCheckResult<TEntity>();
+        try
+        {
+            await _dbSet.AddAsync(entity);
+            await _db.SaveChangesAsync();
+            result.ReturnValue = entity;
+        }
+        catch (Exception ex)
+        {
+            result.RaiseException(ex, nameof(GenericRepositoryBase<TEntity, TKey>), nameof(Create));
+        }
+        return result;
+    }
+
+    public virtual async Task<ExceptionCheckResult<TEntity>> Update(TKey key, TEntity entity)
+    {
+        var result = new ExceptionCheckResult<TEntity>();
+        try
+        {
+            var existingEntity = await GetByKey(key);
+            if (existingEntity == null)
+            {
+                result.IsValid = false;
+                return result;
+            }
+
+            _db.Entry(existingEntity).CurrentValues.SetValues(entity);
+            await _db.SaveChangesAsync();
+            result.ReturnValue = entity;
+        }
+        catch (Exception ex)
+        {
+            result.RaiseException(ex, nameof(GenericRepositoryBase<TEntity, TKey>), nameof(Update));
+        }
+        return result;
+    }
+
+    public virtual async Task<ExceptionCheckResult<TEntity>> Delete(TKey key)
+    {
+        var result = new ExceptionCheckResult<TEntity>();
+        try
+        {
+            var entity = await GetByKey(key);
+            if (entity == null)
+            {
+                result.IsValid = false;
+                return result;
+            }
+
+            _dbSet.Remove(entity);
+            await _db.SaveChangesAsync();
+            result.ReturnValue = entity;
+        }
+        catch (Exception ex)
+        {
+            result.RaiseException(ex, nameof(GenericRepositoryBase<TEntity, TKey>), nameof(Delete));
+        }
+        return result;
+    }
+
+    public virtual TKey GetPrimaryKey(TEntity entity)
+    {
+        var keyProperties = _db.Model.FindEntityType(typeof(TEntity)).FindPrimaryKey().Properties;
+        if (keyProperties.Count == 1)
+        {
+            return (TKey)keyProperties[0].GetGetter().GetClrValue(entity);
+        }
+        else
+        {
+            // For composite keys, return a tuple or a custom struct
+            var keyValues = keyProperties.Select(p => p.GetGetter().GetClrValue(entity)).ToArray();
+            return (TKey)Convert.ChangeType(keyValues, typeof(TKey));
+        }
+    }
+}
+/*
+public class ChahtaAchakvliRepository<TEntity, TKey> : GenericRepositoryBase<TEntity, TKey>, IChahtaAchakvliRepository<TEntity, TKey> where TEntity : class
+{
+    public ChahtaAchakvliRepository(ChahtaAchakvliContext chahtaAchakvliContext) : base(chahtaAchakvliContext) { }
+    public ChahtaAchakvliRepository() : base() { }
+    protected override DbContext CreateContext() => new ChahtaAchakvliContext();
+}
+
+public class ElectionManagementRepository<TEntity, TKey> : GenericRepositoryBase<TEntity, TKey>, IElectionManagementRepository<TEntity, TKey> where TEntity : class
+{
+    public ElectionManagementRepository(ElectionManagementContext electionManagementContext) : base(electionManagementContext) { }
+    public ElectionManagementRepository() : base() { }
+    protected override DbContext CreateContext() => new ElectionManagementContext();
+}
+
+
+public interface IChahtaAchakvliRepository<TEntity, TKey> : IGenericRepository<TEntity, TKey> where TEntity : class { }
+public interface IElectionManagementRepository<TEntity, TKey> : IGenericRepository<TEntity, TKey> where TEntity : class { }
+
+*/
+
+<<END_FILE>>
+<<START_FILE>> Infrastructure/IEdmModel.cs
+using Microsoft.OData.Edm;
+
+namespace MultiEdmODataApi.Infrastructure;
+
+public interface IEdmDataModel
+{
+    public IEdmModel EdmModel { get; } 
+}
+<<END_FILE>>
+<<START_FILE>> Infrastructure/ODataQueryOptionsFilter.cs
+using Microsoft.OpenApi.Any;
+using Microsoft.OpenApi.Models;
+using Swashbuckle.AspNetCore.SwaggerGen;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Microsoft.OData.Edm;
+using MultiEdmODataApi.MockDb1;
+using MultiEdmODataApi.MockDb2;
+using MultiEdmODataApi.MockDb3;
+
+namespace MultiEdmODataApi.Infrastructure
+{
+    public class ODataQueryOptionsFilter : IOperationFilter
+    {
+        private readonly List<IEdmModel> _edmModels;
+
+        public ODataQueryOptionsFilter(List<IEdmModel> edmModels)
+        {
+            _edmModels = edmModels;
+        }
+
+        public void Apply(OpenApiOperation operation, OperationFilterContext context)
+        {
+            if (operation.Parameters == null)
+                operation.Parameters = new List<OpenApiParameter>();
+
+            var entitySetName = context.ApiDescription.RelativePath?.Split('/').LastOrDefault();
+            if (entitySetName != null)
+            {
+                foreach (var edmModel in _edmModels)
+                {
+                    var entityType = edmModel.EntityContainer.EntitySets().FirstOrDefault(es => es.Name == entitySetName)?.EntityType();
+
+                    if (entityType != null)
+                    {
+                        AddODataQueryOptions(operation.Parameters);
+                        break;
+                    }
+                }
+            }
+        }
+
+        private void AddODataQueryOptions(IList<OpenApiParameter> parameters)
+        {
+            parameters.Add(new OpenApiParameter
+            {
+                Name = "$select",
+                In = ParameterLocation.Query,
+                Schema = new OpenApiSchema { Type = "string" },
+                Description = "Select specific fields"
+            });
+
+            parameters.Add(new OpenApiParameter
+            {
+                Name = "$expand",
+                In = ParameterLocation.Query,
+                Schema = new OpenApiSchema { Type = "string" },
+                Description = "Expand related entities"
+            });
+
+            parameters.Add(new OpenApiParameter
+            {
+                Name = "$filter",
+                In = ParameterLocation.Query,
+                Schema = new OpenApiSchema { Type = "string" },
+                Description = "Filter the results"
+            });
+
+            parameters.Add(new OpenApiParameter
+            {
+                Name = "$orderby",
+                In = ParameterLocation.Query,
+                Schema = new OpenApiSchema { Type = "string" },
+                Description = "Order the results"
+            });
+
+            parameters.Add(new OpenApiParameter
+            {
+                Name = "$top",
+                In = ParameterLocation.Query,
+                Schema = new OpenApiSchema { Type = "integer", Format = "int32" },
+                Description = "Limit the number of results"
+            });
+
+            parameters.Add(new OpenApiParameter
+            {
+                Name = "$skip",
+                In = ParameterLocation.Query,
+                Schema = new OpenApiSchema { Type = "integer", Format = "int32" },
+                Description = "Skip a number of results"
+            });
+
+            parameters.Add(new OpenApiParameter
+            {
+                Name = "$count",
+                In = ParameterLocation.Query,
+                Schema = new OpenApiSchema { Type = "boolean" },
+                Description = "Include count of total results"
+            });
+        }
+    }
+}
+
+<<END_FILE>>
+<<START_FILE>> Infrastructure/ServicesConfiguration.cs
+using MultiEdmODataApi;
+
+namespace MultiEdmODataApi.Infrastructure;
+
+public static class ServicesConfiguration
+{
+    public static void AddServices(this IServiceCollection services)
+    {
+        /*This will loop through all the model libraries and try to find those objects with interfaces that match either the class name with and I 
+         *if it finds it, it will automatically register the class or service for DI 
+         */
+        string AssembliesToSearchInCSV = "MultiEdmODataApi";
+
+        List<Type> typesWithIAutoRegisterable = new List<Type>();
+        foreach (var ass in AppDomain.CurrentDomain.GetAssemblies())
+            typesWithIAutoRegisterable.AddRange(ass.GetTypes()
+            .Where(x => !x.IsAbstract && x.IsClass && (AssembliesToSearchInCSV.Split(",").Contains(x?.Namespace ?? "")))
+            );
+        foreach (var autoRegisterable in typesWithIAutoRegisterable)
+        {
+            var interfaces = (((System.Reflection.TypeInfo)autoRegisterable).ImplementedInterfaces);
+            var autoInterfacesString = $"I{autoRegisterable.Name}";
+            //If the class name to check ends with DTO, there might be an interface that doesn't have DTO at the end, so lets search for those also
+            var autoInterfaces = autoInterfacesString.Split(',');
+            var selfInterfaceType = interfaces?.Where(i => autoInterfaces.Contains(i.Name))?.Select(t => t).FirstOrDefault();
+            if (selfInterfaceType != null)
+            {
+                services.AddTransient(selfInterfaceType, autoRegisterable);
+            }
+        }
+    }    
+}
+<<END_FILE>>
+<<START_FILE>> Properties/launchSettings.json
+{
+  "$schema": "http://json.schemastore.org/launchsettings.json",
+  "iisSettings": {
+    "windowsAuthentication": false,
+    "anonymousAuthentication": true,
+    "iisExpress": {
+      "applicationUrl": "http://localhost:36243",
+      "sslPort": 44390
+    }
+  },
+  "profiles": {
+    "http": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": true,
+      "launchUrl": "swagger",
+      "applicationUrl": "http://localhost:5293",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
+    "https": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": true,
+      "launchUrl": "swagger",
+      "applicationUrl": "https://localhost:7053;http://localhost:5293",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
+    "IIS Express": {
+      "commandName": "IISExpress",
+      "launchBrowser": true,
+      "launchUrl": "swagger",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}
+
+<<END_FILE>>
+<<START_FILE>> _Global.cs
+global using System;
+global using System.Collections.Generic;
+global using System.Linq;
+global using System.Threading.Tasks;
+global using Microsoft.OData.Edm;
+global using Microsoft.OData.ModelBuilder;
+global using Microsoft.AspNetCore.Mvc;
+global using Microsoft.AspNetCore.OData.Query;
+global using Microsoft.AspNetCore.OData.Routing.Controllers;
+global using Microsoft.AspNetCore.OData.Routing;
+
+global using Microsoft.OpenApi.Any;
+global using Microsoft.OpenApi.Models;
+global using Swashbuckle.AspNetCore.SwaggerGen;
+
+global using Microsoft.AspNetCore.OData;
+
+global using MultiEdmODataApi;
+global using MultiEdmODataApi.Infrastructure;
+
+
+global using MultiEdmODataApi.MockDb1;
+global using MultiEdmODataApi.MockDb2;
+global using MultiEdmODataApi.MockDb3;
+global using Swashbuckle.AspNetCore.SwaggerUI;
+
+global using Microsoft.EntityFrameworkCore;
+
+<<END_FILE>>
+<<START_FILE>> appsettings.Development.json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  }
+}
+
+<<END_FILE>>
+<<START_FILE>> appsettings.json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*"
+}
+
+<<END_FILE>>
+<<START_FILE>> MultiEdmODataApi.csproj
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OData" Version="9.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.8" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.8" />
+    <PackageReference Include="Microsoft.OData.ModelBuilder" Version="2.0.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.7.3" />
+  </ItemGroup>
+
+</Project>
+
+<<END_FILE>>
+<<START_FILE>> Program.cs
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container.
+builder.Services.AddControllers()
+    .AddOData(opt => ApiConfig.ConfigureOData(opt));
+
+// Add Swagger services
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(c =>
+{
+    ApiConfig.ConfigureSwagger(c);
+    c.OperationFilter<ODataQueryOptionsFilter>(ApiConfig.GetEdmModels());
+});
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
+{
+    app.UseDeveloperExceptionPage();
+    app.UseSwagger();
+    app.UseSwaggerUI(c => ApiConfig.ConfigureSwaggerUI(c));
+}
+
+app.UseHttpsRedirection();
+app.UseAuthorization();
+
+app.MapControllers();
+
+// Add this test endpoint
+app.MapGet("/test", () => "Hello from the API!");
+
+app.Run();
+
+<<END_FILE>>

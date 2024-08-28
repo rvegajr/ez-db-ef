@@ -8,6 +8,9 @@ using Microsoft.EntityFrameworkCore.Design.Internal;
 using Microsoft.EntityFrameworkCore.Scaffolding;
 using Microsoft.EntityFrameworkCore.SqlServer.Design.Internal;
 using Microsoft.Extensions.DependencyInjection;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using EzDbEf.Utilities;
 
 namespace EzDbEf;
 
@@ -185,6 +188,8 @@ public class SolutionGenerator
     private void CreateProjectFile(string projectPath, string projectName, string packageVersion)
     {
         Log($"Creating project file: {projectPath}");
+        Directory.CreateDirectory(Path.GetDirectoryName(projectPath));
+        
         var projectContent = $@"<?xml version=""1.0"" encoding=""utf-8""?>
 <Project Sdk=""Microsoft.NET.Sdk"">
   <PropertyGroup>
@@ -205,14 +210,14 @@ public class SolutionGenerator
     <Description>Generated Entity Framework Core models for database access</Description>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include=""Microsoft.EntityFrameworkCore.SqlServer"" Version=""8.0.0"" />
-    <PackageReference Include=""Microsoft.EntityFrameworkCore.Design"" Version=""8.0.0"">
+    <PackageReference Include=""Microsoft.EntityFrameworkCore.SqlServer"" Version=""8.0.8"" />
+    <PackageReference Include=""Microsoft.EntityFrameworkCore.Design"" Version=""8.0.8"">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
   </ItemGroup>
   <ItemGroup>
-    <Compile Include=""Models\**\*.cs"" />
+    <Compile Include=""**\*.cs"" Exclude=""obj\**\*.cs"" />
   </ItemGroup>
 </Project>";
 
@@ -223,61 +228,36 @@ public class SolutionGenerator
     private async Task GenerateEfCoreModelAsync(string database, string projectPath)
     {
         Log($"Generating EF Core model for database: {database}");
-        var projectDir = Path.GetDirectoryName(projectPath)!;
-        var outputDir = Path.Combine(projectDir, "Models");
-        Directory.CreateDirectory(outputDir);
-        Log($"Created Models directory: {outputDir}");
 
-        var optionsBuilder = new DbContextOptionsBuilder<DbContext>();
-        optionsBuilder.UseSqlServer(GetDatabaseSpecificConnectionString(_connectionString, database));
+        await EnsureToolsInstalledAsync();
 
-        var serviceCollection = new ServiceCollection()
-            .AddEntityFrameworkSqlServer()
-            .AddDbContext<DbContext>(options => options.UseSqlServer(GetDatabaseSpecificConnectionString(_connectionString, database)))
-            .AddEntityFrameworkDesignTimeServices()
-            .AddSingleton<IOperationReporter>(new OperationReporter(_logger));
+        var outputDir = projectPath;
+        //var outputDir = Path.Combine(projectPath, "Models");
+        //Directory.CreateDirectory(outputDir);
+        //Log($"Created directory: {outputDir}");
 
-        serviceCollection.AddEntityFrameworkDesignTimeServices();
-        new SqlServerDesignTimeServices().ConfigureDesignTimeServices(serviceCollection);
+        var connectionString = GetDatabaseSpecificConnectionString(_connectionString, database);
 
-        var serviceProvider = serviceCollection.BuildServiceProvider();
+        // Create a configuration file for efcpt
+        var configFilePath = Path.Combine(projectPath, "efcpt-config.json");
+        var renamingRulesPath = Path.Combine(projectPath, "efpt.renaming.json");
 
-        var scaffolder = serviceProvider.GetRequiredService<IReverseEngineerScaffolder>();
+        await File.WriteAllTextAsync(configFilePath, JsonHelper.SerializeToKebabCase(EfcptConfigInstance.Create($"{database}Context", $"{_assemblyPrefix}.DAL.{database}.Models")));
+        await File.WriteAllTextAsync(renamingRulesPath, JsonHelper.SerializeToKebabCase(new EFPTRenaming()));
 
-        var dbOptions = new DatabaseModelFactoryOptions();
-        var modelOptions = new ModelReverseEngineerOptions
+        // Prepare the command
+        var command = $"efcpt \"{connectionString}\" mssql -i \"{configFilePath}\"  -o \"{outputDir}\"".Replace("\"", "\"\"");
+
+        try
         {
-            UseDatabaseNames = true
-        };
-
-        var codeOptions = new ModelCodeGenerationOptions
-        {
-            UseDataAnnotations = true,
-            UseNullableReferenceTypes = true,
-            ContextName = $"{database}Context",
-            ContextNamespace = $"{_assemblyPrefix}.DAL.{database}.Models",
-            ModelNamespace = $"{_assemblyPrefix}.DAL.{database}.Models",
-        };
-
-        Log("Starting database scaffolding");
-        var scaffoldedModel = await Task.Run(() => scaffolder.ScaffoldModel(
-            GetDatabaseSpecificConnectionString(_connectionString, database),
-            dbOptions,
-            modelOptions,
-            codeOptions));
-
-        foreach (var file in scaffoldedModel.AdditionalFiles)
-        {
-            var path = Path.Combine(outputDir, file.Path);
-            await File.WriteAllTextAsync(path, file.Code);
+            await RunCommandAsync(command);
+            Log($"Generated EF Core model for database: {database}");
         }
-
-        var contextPath = Path.Combine(outputDir, $"{codeOptions.ContextName}.cs");
-        await File.WriteAllTextAsync(contextPath, scaffoldedModel.ContextFile.Code);
-
-        Log($"Saved {scaffoldedModel.AdditionalFiles.Count + 1} files to {outputDir}");
-
-        Log($"Generated EF Core model for database: {database}");
+        catch (Exception ex)
+        {
+            Log($"Error generating EF Core model: {ex.Message}");
+            throw;
+        }
     }
 
     private async Task CompileSolutionAsync(string solutionPath)
@@ -445,7 +425,7 @@ public class SolutionGenerator
     {
         Log($"Adding project to solution: {projectName}");
         var projectGuid = Guid.NewGuid().ToString().ToUpper();
-        var relativeProjectPath = Path.GetRelativePath(Path.GetDirectoryName(solutionPath)!, projectPath);
+        var relativeProjectPath = Path.GetRelativePath(Path.GetDirectoryName(solutionPath), projectPath);
 
         var solutionContent = await File.ReadAllTextAsync(solutionPath);
         var lines = solutionContent.Split(Environment.NewLine).ToList();
@@ -483,22 +463,108 @@ public class SolutionGenerator
 
     private async Task GenerateDatabaseProjectAsync(string database)
     {
-        Log($"Generating project for database: {database}");
         var projectName = $"{_assemblyPrefix}.DAL.{database}";
-        var projectPath = Path.Combine(_dalPath, database, $"{projectName}.csproj");
+        var projectPath = Path.Combine(_dalPath, database);
+        Directory.CreateDirectory(projectPath);
 
+        Log($"Creating project for database: {database}");
         Log($"Project path: {projectPath}");
 
-        Directory.CreateDirectory(Path.GetDirectoryName(projectPath)!);
-        Log($"Created directory: {Path.GetDirectoryName(projectPath)}");
+        var projectFile = Path.Combine(projectPath, $"{projectName}.csproj");
+        CreateProjectFile(projectFile, projectName, _packageVersion);
 
-        CreateProjectFile(projectPath, projectName, _packageVersion);
-        Log($"Created project file: {projectPath}");
-
-        await AddProjectToSolutionAsync(_solutionPath, projectPath, projectName);
-        Log($"Added project to solution: {projectName}");
+        await AddProjectToSolutionAsync(_solutionPath, projectFile, projectName);
 
         await GenerateEfCoreModelAsync(database, projectPath);
-        Log($"Generated EF Core model for database: {database}");
+    }
+
+    private async Task EnsureToolsInstalledAsync()
+    {
+        await EnsureToolInstalledAsync("dotnet-ef", "dotnet tool install --global dotnet-ef");
+        await EnsureToolInstalledAsync("dotnet-efcpt", "dotnet tool install --global ErikEJ.EFCorePowerTools.Cli");
+    }
+
+    private async Task EnsureToolInstalledAsync(string toolName, string installCommand)
+    {
+        if (!await IsToolInstalledAsync(toolName))
+        {
+            Log($"{toolName} is not installed. Installing...");
+            try
+            {
+                await RunCommandAsync(installCommand);
+                Log($"{toolName} has been installed.");
+            }
+            catch (Exception ex)
+            {
+                if (ex.Message.Contains("is already installed"))
+                {
+                    Log($"{toolName} is already installed.");
+                }
+                else
+                {
+                    Log($"Error installing {toolName}: {ex.Message}");
+                    throw;
+                }
+            }
+        }
+        else
+        {
+            Log($"{toolName} is already installed.");
+        }
+    }
+
+    private async Task<bool> IsToolInstalledAsync(string toolName)
+    {
+        var fileName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "where" : "which";
+        var arguments = toolName;
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = fileName,
+            Arguments = arguments,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var process = new Process { StartInfo = startInfo };
+        process.Start();
+        await process.WaitForExitAsync();
+
+        return process.ExitCode == 0;
+    }
+
+    private async Task RunCommandAsync(string command)
+    {
+        Log($"Executing command: {command}");
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "/bin/bash",
+            Arguments = $"-c \"{command}\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var process = new Process { StartInfo = startInfo };
+        process.Start();
+        
+        var output = await process.StandardOutput.ReadToEndAsync();
+        var error = await process.StandardError.ReadToEndAsync();
+
+        await process.WaitForExitAsync();
+
+        if (process.ExitCode != 0)
+        {
+            Log($"Command failed. Exit code: {process.ExitCode}");
+            Log($"Standard Output: {output}");
+            Log($"Standard Error: {error}");
+            throw new Exception($"Command failed. Exit code: {process.ExitCode}\nErrors: {error}");
+        }
+
+        Log(output);
     }
 }

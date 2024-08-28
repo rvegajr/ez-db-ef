@@ -36,7 +36,7 @@ public class ApiGenerator
         await _apiProjectGenerator.AddApiProjectToSolutionAsync(apiProjectPath);
         await _apiProjectGenerator.AddProjectReferencesAsync(apiProjectPath);
         await GenerateControllersAsync(apiProjectPath);
-        await _startupGenerator.GenerateStartupFilesAsync(apiProjectPath);
+        //await _startupGenerator.GenerateStartupFilesAsync(apiProjectPath);
         await ConfigureAppSettingsAsync(apiProjectPath);
 
         _logger.LogInformation("API generation completed successfully");

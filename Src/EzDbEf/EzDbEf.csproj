@@ -23,7 +23,19 @@
 		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="8.0.0" />
 		<PackageReference Include="Microsoft.Extensions.Logging.EventLog" Version="8.0.0" />
 		<PackageReference Include="Microsoft.Extensions.Configuration" Version="8.0.0" />
+		<PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
 		<PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
 	</ItemGroup>
 
+	<ItemGroup>
+	  <None Remove="Resources\ProjectPack.ps1" />
+	  <Resource Include="Resources\ProjectPack.ps1" />
+	  <None Remove="Resources\ProjectUnpack.ps1" />
+	  <Resource Include="Resources\ProjectUnpack.ps1" />
+	</ItemGroup>
+	<ItemGroup>
+		<None Update="Templates\*.hbs">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+	</ItemGroup>
 </Project>

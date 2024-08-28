@@ -1,0 +1,12 @@
+namespace {{namespace}};
+
+public partial class {{name}}
+{
+{{#each properties}}
+    public {{type}} {{name}} { get; set; }{{#if nullable}}?{{/if}}
+{{/each}}
+
+{{#each navigations}}
+    public virtual {{type}} {{name}} { get; set; }{{#if nullable}}?{{/if}}
+{{/each}}
+}
